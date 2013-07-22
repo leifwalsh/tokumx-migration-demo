@@ -94,9 +94,15 @@
 
 *** Capture OpTime
     While the secondary is offline, we can find out what its max OpTime is
-    by checking the master:
+    by checking the master and looking at the "optime" of our down
+    secondary:
+    #+begin_src sh :dir mongodb-2.4.5 :results output verbatim
+      bin/mongo localhost:20000 --quiet --eval "printjson(rs.status())"
+    #+end_src
+
+    You can get this programmatically too:
     #+name: snapshot_time
-    #+begin_src sh :dir ~/mongodb-2.4.5 :cache yes
+    #+begin_src sh :dir mongodb-2.4.5 :cache yes
       bin/mongo localhost:20000 --quiet --eval "var ot = rs.status().members[2].optime; print(ot.t + ':' + ot.i)"
     #+end_src
 
@@ -105,7 +111,7 @@
 *** Restart secondary
     Now we can restart that secondary and let it get back into the set:
     #+begin_src sh :dir mongodb-2.4.5 :results output silent
-      bin/mongod --replSet vanilla --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
+      bin/mongod --replSet vanilla -f ../mongodb.conf --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
     #+end_src
 
 ** Restore
