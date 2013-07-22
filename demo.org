@@ -1,0 +1,218 @@
+* Introduction
+  Today we released TokuMX 1.0.3, which includes a tool that will make it
+  a lot easier to migrate your data from MongoDB into TokuMX.
+
+  I'd like to demonstrate how it works with a simple example.
+
+  This presentation is available at
+  http://github.com/leifwalsh/tokumx-migration-demo, and all of the code
+  blocks below are executable, if you enable shell execution with
+  org-babel by evaluating these forms:
+  #+begin_src emacs-lisp
+    (org-babel-do-load-languages
+     'org-babel-load-languages
+     '((sh . t)))
+    (setq org-babel-sh-command "bash")
+  #+end_src
+
+  If you aren't using emacs or you're afraid of org-mode, don't worry, you
+  can still type everything below into a shell prompt.
+
+* Vanilla Replica Set
+  Let's start by bringing up a replica set of vanilla MongoDB instances.
+
+  I've downloaded mongodb-2.4.5 from http://www.mongodb.org/downloads and
+  unpacked it here to mongodb-2.4.5:
+  #+begin_src sh :results output silent
+    mkdir mongodb-2.4.5
+    tar xzf mongodb-linux-x86_64-2.4.5.tgz -C mongodb-2.4.5 --strip-components 1
+  #+end_src
+  I've already done this so I'm going to skip it because it takes a while.
+
+  This will set up a three-node replica set for us:
+  #+begin_src sh :dir mongodb-2.4.5 :results value verbatim
+    rm -rf ../vanilla
+    mkdir -p ../vanilla/db{0,1,2}
+    bin/mongod --replSet vanilla --fork --logpath=../vanilla/db0.log --dbpath=../vanilla/db0 --port 20000
+    bin/mongod --replSet vanilla --fork --logpath=../vanilla/db1.log --dbpath=../vanilla/db1 --port 20001
+    bin/mongod --replSet vanilla --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
+    bin/mongo localhost:20000 --quiet --eval "rs.initiate(); do { sleep(1000); } while (!db.adminCommand('ismaster').ismaster);"
+    host=`hostname`
+    bin/mongo localhost:20000 --quiet --eval "rs.add('${host}:20001'); rs.add('${host}:20002')"
+    bin/mongo localhost:20001 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
+    bin/mongo localhost:20002 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
+  #+end_src
+
+  We can monitor this set with =mongostat=:
+  #+begin_src sh
+    bin/mongostat -h localhost:20000,localhost:20001,localhost:20002
+  #+end_src
+
+* Workload
+  I've created a [[./inserts.py][very simple python script]] that inserts into a collection.
+  This will be our example "application".
+
+  We'll go slow for now so that with many servers on one machine, we don't
+  bog it down, but replacing "slow" with "fast" below works too, and
+  demonstrates a migration under more load.
+
+  Let's get some data in there to start with.  I'll run this in a separate
+  shell.
+  #+begin_src sh
+    ./inserts.py 'mongodb://localhost:20000,localhost:20001,localhost:20002/?replicaSet=vanilla' test.inserts slow
+  #+end_src
+
+  We'll leave this running while we do the migration, and we'll only stop
+  it right at the end when we switch over.
+
+* Migration Process
+  The migration process is four steps:
+  1. Dump
+  2. Restore
+  3. Catchup
+  4. Switch
+
+  I'll take you through them one by one.
+
+** Dump
+
+   We need to get a consistent snapshot of the state of the world at some
+   point.  We'll use a secondary for this, but we also need to know the
+   OpTime when we are taking the snapshot.
+
+   We need to take the secondary down for a moment to get a snapshot:
+   #+begin_src sh :dir mongodb-2.4.5
+     bin/mongod --dbpath=../vanilla/db2 --shutdown
+   #+end_src
+
+   We'll grab a copy of the data with =mongodump=:
+   #+begin_src sh :dir mongodb-2.4.5 :results output silent
+     rm -rf ../dump
+     mkdir -p ../dump
+     bin/mongodump --dbpath=../vanilla/db2 --out ../dump
+   #+end_src
+   
+   While the secondary is offline, we can find out what its max OpTime is
+   by checking the master:
+   #+name: snapshot_time
+   #+begin_src sh :dir ~/mongodb-2.4.5 :cache yes
+     bin/mongo localhost:20000 --quiet --eval "var ot = rs.status().members[2].optime; print(ot.t + ':' + ot.i)"
+   #+end_src
+
+   We'll use this value later.
+
+   Now we can restart that secondary and let it get back into the set:
+   #+begin_src sh :dir mongodb-2.4.5 :results output silent
+     bin/mongod --replSet vanilla --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
+   #+end_src
+
+** Restore
+
+   Now we need to import this data into TokuMX.  I've already downloaded
+   TokuMX 1.0.3 from http://www.tokutek.com/products/downloads and
+   extracted it to tokumx-1.0.3:
+   #+begin_src sh :results output silent
+     mkdir -p tokumx-1.0.3
+     tar xzf tokumx-1.0.3-linux-x86_64.tgz -C tokumx-1.0.3 --strip-components 1
+   #+end_src
+
+   We'll use =mongorestore= from the TokuMX install to load the mongodump:
+   #+begin_src sh :dir tokumx-1.0.3 :results output silent
+     rm -rf ../tokumx
+     mkdir -p ../tokumx/db{0,1,2}
+     bin/mongorestore --dbpath=../tokumx/db0 ../dump
+   #+end_src
+
+   Now let's start up that server.
+   #+begin_src sh :dir tokumx-1.0.3 :results output verbatim
+     bin/mongod --replSet tokumx --fork --logpath=../tokumx/db0.log --dbpath=../tokumx/db0 --port 30000
+     bin/mongo localhost:30000 --quiet --eval "rs.initiate(); do { sleep(1000); } while (!db.adminCommand('ismaster').ismaster);"
+   #+end_src
+
+   We'll add some replicas soon, but let's get this server to start
+   syncing ASAP.
+
+** Catchup
+   The catchup phase uses the =mongo2toku= tool that's packaged in the
+   TokuMX 1.0.3 distribution.  This tool reads oplog entries in the
+   vanilla MongoDB format and replays them on another TokuMX server.  It
+   basically allows TokuMX to act like a limited secondary in a vanilla
+   MongoDB replica set (limited because it can't satisfy write concern
+   values).
+
+   It needs to know from what point in the oplog (OpTime) it should start
+   replaying, because the TokuMX server isn't going to store its own copy
+   of the vanilla oplog format.  This is where we use the OpTime we
+   recorded above.  I've duplicated the value here, but don't re-run that
+   command now, you'll get a different value now that the secondary is
+   back in the replica set!
+
+   #+RESULTS: snapshot_time
+
+   This will be the argument we use for =--ts=.  We also need the source
+   (=--from=) and destination (=--host=) servers.
+
+   I'll use the snapshot_time from above and run this in a separate shell.
+   #+begin_src sh
+     bin/mongo2toku --from vanilla/localhost:20000,localhost:20001,localhost:20002 \
+         --host tokumx/localhost:30000 --ts=${snapshot_time}
+   #+end_src
+
+   This will get TokuMX synced up with the vanilla replica set and then
+   keep it synced.
+
+   At this point, we can just switch our application over, but let's get a
+   full TokuMX replica set up first:
+   #+begin_src sh :dir tokumx-1.0.3 :results value verbatim
+     bin/mongod --replSet tokumx --fork --logpath=../tokumx/db1.log --dbpath=../tokumx/db1 --port 20001
+     bin/mongod --replSet tokumx --fork --logpath=../tokumx/db2.log --dbpath=../tokumx/db2 --port 20002
+     host=`hostname`
+     bin/mongo localhost:30000 --quiet --eval "rs.add('${host}:30001'); rs.add('${host}:30002')"
+     bin/mongo localhost:30001 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
+     bin/mongo localhost:30002 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
+   #+end_src
+
+   We can monitor this set with =mongostat=:
+   #+begin_src sh
+     bin/mongostat -h localhost:20000,localhost:20001,localhost:20002
+   #+end_src
+
+   Now we should stop =mongo2toku= and let it know about the new
+   replicas.  When we stop it with ^C it will let us know how far it
+   synced, and how to resume at this point in the oplog.  Watch this.
+   #+begin_src sh
+     bin/mongo2toku --from vanilla/localhost:20000,localhost:20001,localhost:20002 \
+         --host tokumx/localhost:30000 --ts=${snapshot_time}
+   #+end_src
+
+** Switch
+   Once we're all caught up, the only thing left to do is to stop our
+   application for a moment, make sure we're synced up to the vanilla
+   set, and restart it pointed to TokuMX.
+   #+begin_src sh
+     ./inserts.py 'mongodb://localhost:30000,localhost:30001,localhost:30002/?replicaSet=tokumx test.inserts slow
+   #+end_src
+
+   Now we can shut down the vanilla replica set, and we're all done!
+   #+begin_src sh :dir mongodb-2.4.5 :results value verbatim
+     bin/mongod --dbpath=../vanilla/db0 --shutdown
+     bin/mongod --dbpath=../vanilla/db1 --shutdown
+     bin/mongod --dbpath=../vanilla/db2 --shutdown
+   #+end_src
+
+* Conclusion
+  I hope you enjoyed this demo of migrating data from vanilla MongoDB to
+  TokuMX.  If you'd like to try it out yourself, you can download this
+  file at http://github.com/leifwalsh/tokumx-migration-demo, it has
+  everything you need to try it out.
+
+  You can download TokuMX at http://www.tokutek.com/products/downloads.
+
+  Let us know if you have any questions, we're on the [[mailto:tokumx-user@googlegroups.com][tokumx google
+  group]], #tokutek on irc.freenode.net, and you can contact us by email at
+  [[mailto:support@tokutek.com][support@tokutek.com]] or [[mailto:contact@tokutek.com][contact@tokutek.com]] for evaluations and support.
+
+  You can contact me personally at [[mailto:leif@tokutek.com][leif@tokutek.com]] and you can follow me
+  on twitter at @leifwalsh.
+
+  Thanks for watching!
