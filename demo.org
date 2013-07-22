@@ -31,7 +31,6 @@
 
   This will set up a three-node replica set for us:
   #+begin_src sh :dir mongodb-2.4.5 :results value verbatim
-    rm -rf ../vanilla
     mkdir -p ../vanilla/db{0,1,2}
     bin/mongod --replSet vanilla --fork --logpath=../vanilla/db0.log --dbpath=../vanilla/db0 --port 20000
     bin/mongod --replSet vanilla --fork --logpath=../vanilla/db1.log --dbpath=../vanilla/db1 --port 20001
@@ -80,34 +79,36 @@
    point.  We'll use a secondary for this, but we also need to know the
    OpTime when we are taking the snapshot.
 
-   We need to take the secondary down for a moment to get a snapshot:
-   #+begin_src sh :dir mongodb-2.4.5
-     bin/mongod --dbpath=../vanilla/db2 --shutdown
-   #+end_src
+*** Take secondary offline
+    We need to take the secondary down for a moment to get a snapshot:
+    #+begin_src sh :dir mongodb-2.4.5
+      bin/mongod --dbpath=../vanilla/db2 --shutdown
+    #+end_src
 
-   We'll grab a copy of the data with =mongodump=:
-   #+begin_src sh :dir mongodb-2.4.5 :results output silent
-     rm -rf ../dump
-     mkdir -p ../dump
-     bin/mongodump --dbpath=../vanilla/db2 --out ../dump
-   #+end_src
-   
-   While the secondary is offline, we can find out what its max OpTime is
-   by checking the master:
-   #+name: snapshot_time
-   #+begin_src sh :dir ~/mongodb-2.4.5 :cache yes
-     bin/mongo localhost:20000 --quiet --eval "var ot = rs.status().members[2].optime; print(ot.t + ':' + ot.i)"
-   #+end_src
+*** Get data
+    We'll grab a copy of the data with =mongodump=:
+    #+begin_src sh :dir mongodb-2.4.5 :results output silent
+      mkdir -p ../dump
+      bin/mongodump --dbpath=../vanilla/db2 --out ../dump
+    #+end_src
 
-   We'll use this value later.
+*** Capture OpTime
+    While the secondary is offline, we can find out what its max OpTime is
+    by checking the master:
+    #+name: snapshot_time
+    #+begin_src sh :dir ~/mongodb-2.4.5 :cache yes
+      bin/mongo localhost:20000 --quiet --eval "var ot = rs.status().members[2].optime; print(ot.t + ':' + ot.i)"
+    #+end_src
 
-   Now we can restart that secondary and let it get back into the set:
-   #+begin_src sh :dir mongodb-2.4.5 :results output silent
-     bin/mongod --replSet vanilla --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
-   #+end_src
+    We'll use this value later.
+
+*** Restart secondary
+    Now we can restart that secondary and let it get back into the set:
+    #+begin_src sh :dir mongodb-2.4.5 :results output silent
+      bin/mongod --replSet vanilla --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
+    #+end_src
 
 ** Restore
-
    Now we need to import this data into TokuMX.  I've already downloaded
    TokuMX 1.0.3 from http://www.tokutek.com/products/downloads and
    extracted it to tokumx-1.0.3:
@@ -118,7 +119,6 @@
 
    We'll use =mongorestore= from the TokuMX install to load the mongodump:
    #+begin_src sh :dir tokumx-1.0.3 :results output silent
-     rm -rf ../tokumx
      mkdir -p ../tokumx/db{0,1,2}
      bin/mongorestore --dbpath=../tokumx/db0 ../dump
    #+end_src
@@ -152,38 +152,41 @@
    This will be the argument we use for =--ts=.  We also need the source
    (=--from=) and destination (=--host=) servers.
 
-   I'll use the snapshot_time from above and run this in a separate shell.
-   #+begin_src sh
-     bin/mongo2toku --from vanilla/localhost:20000,localhost:20001,localhost:20002 \
-         --host tokumx/localhost:30000 --ts=${snapshot_time}
-   #+end_src
+*** Start syncing
+    I'll use the snapshot_time from above and run this in a separate shell.
+    #+begin_src sh
+      bin/mongo2toku --from vanilla/localhost:20000,localhost:20001,localhost:20002 \
+          --host tokumx/localhost:30000 --ts=${snapshot_time}
+    #+end_src
 
-   This will get TokuMX synced up with the vanilla replica set and then
-   keep it synced.
+    This will get TokuMX synced up with the vanilla replica set and then
+    keep it synced.
 
-   At this point, we can just switch our application over, but let's get a
-   full TokuMX replica set up first:
-   #+begin_src sh :dir tokumx-1.0.3 :results value verbatim
-     bin/mongod --replSet tokumx --fork --logpath=../tokumx/db1.log --dbpath=../tokumx/db1 --port 20001
-     bin/mongod --replSet tokumx --fork --logpath=../tokumx/db2.log --dbpath=../tokumx/db2 --port 20002
-     host=`hostname`
-     bin/mongo localhost:30000 --quiet --eval "rs.add('${host}:30001'); rs.add('${host}:30002')"
-     bin/mongo localhost:30001 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
-     bin/mongo localhost:30002 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
-   #+end_src
+*** Bring up more replicas
+    At this point, we can just switch our application over, but let's get a
+    full TokuMX replica set up first:
+    #+begin_src sh :dir tokumx-1.0.3 :results value verbatim
+      bin/mongod --replSet tokumx --fork --logpath=../tokumx/db1.log --dbpath=../tokumx/db1 --port 20001
+      bin/mongod --replSet tokumx --fork --logpath=../tokumx/db2.log --dbpath=../tokumx/db2 --port 20002
+      host=`hostname`
+      bin/mongo localhost:30000 --quiet --eval "rs.add('${host}:30001'); rs.add('${host}:30002')"
+      bin/mongo localhost:30001 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
+      bin/mongo localhost:30002 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
+    #+end_src
 
-   We can monitor this set with =mongostat=:
-   #+begin_src sh
-     bin/mongostat -h localhost:20000,localhost:20001,localhost:20002
-   #+end_src
+    We can monitor this set with =mongostat=:
+    #+begin_src sh
+      bin/mongostat -h localhost:20000,localhost:20001,localhost:20002
+    #+end_src
 
-   Now we should stop =mongo2toku= and let it know about the new
-   replicas.  When we stop it with ^C it will let us know how far it
-   synced, and how to resume at this point in the oplog.  Watch this.
-   #+begin_src sh
-     bin/mongo2toku --from vanilla/localhost:20000,localhost:20001,localhost:20002 \
-         --host tokumx/localhost:30000 --ts=${snapshot_time}
-   #+end_src
+*** Stopping and starting =mongo2toku=
+    Now we should stop =mongo2toku= and let it know about the new
+    replicas.  When we stop it with ^C it will let us know how far it
+    synced, and how to resume at this point in the oplog.  Watch this.
+    #+begin_src sh
+      bin/mongo2toku --from vanilla/localhost:20000,localhost:20001,localhost:20002 \
+          --host tokumx/localhost:30000 --ts=${snapshot_time}
+    #+end_src
 
 ** Switch
    Once we're all caught up, the only thing left to do is to stop our
