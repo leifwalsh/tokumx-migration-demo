@@ -32,9 +32,9 @@
   This will set up a three-node replica set for us:
   #+begin_src sh :dir mongodb-2.4.5 :results value verbatim
     mkdir -p ../vanilla/db{0,1,2}
-    bin/mongod --replSet vanilla --fork --logpath=../vanilla/db0.log --dbpath=../vanilla/db0 --port 20000
-    bin/mongod --replSet vanilla --fork --logpath=../vanilla/db1.log --dbpath=../vanilla/db1 --port 20001
-    bin/mongod --replSet vanilla --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
+    bin/mongod --replSet vanilla -f ../mongodb.conf --fork --logpath=../vanilla/db0.log --dbpath=../vanilla/db0 --port 20000
+    bin/mongod --replSet vanilla -f ../mongodb.conf --fork --logpath=../vanilla/db1.log --dbpath=../vanilla/db1 --port 20001
+    bin/mongod --replSet vanilla -f ../mongodb.conf --fork --logpath=../vanilla/db2.log --dbpath=../vanilla/db2 --port 20002
     bin/mongo localhost:20000 --quiet --eval "rs.initiate(); do { sleep(1000); } while (!db.adminCommand('ismaster').ismaster);"
     host=`hostname`
     bin/mongo localhost:20000 --quiet --eval "rs.add('${host}:20001'); rs.add('${host}:20002')"
