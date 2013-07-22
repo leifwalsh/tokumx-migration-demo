@@ -172,8 +172,8 @@
     At this point, we can just switch our application over, but let's get a
     full TokuMX replica set up first:
     #+begin_src sh :dir tokumx-1.0.3 :results value verbatim
-      bin/mongod --replSet tokumx --fork --logpath=../tokumx/db1.log --dbpath=../tokumx/db1 --port 20001
-      bin/mongod --replSet tokumx --fork --logpath=../tokumx/db2.log --dbpath=../tokumx/db2 --port 20002
+      bin/mongod --replSet tokumx --fork --logpath=../tokumx/db1.log --dbpath=../tokumx/db1 --port 30001
+      bin/mongod --replSet tokumx --fork --logpath=../tokumx/db2.log --dbpath=../tokumx/db2 --port 30002
       host=`hostname`
       bin/mongo localhost:30000 --quiet --eval "rs.add('${host}:30001'); rs.add('${host}:30002')"
       bin/mongo localhost:30001 --quiet --eval "while (!db.adminCommand('ismaster').secondary) { sleep(1000); }"
@@ -191,7 +191,7 @@
     synced, and how to resume at this point in the oplog.  Watch this.
     #+begin_src sh
       bin/mongo2toku --from vanilla/localhost:20000,localhost:20001,localhost:20002 \
-          --host tokumx/localhost:30000 --ts=${snapshot_time}
+          --host tokumx/localhost:30000,localhost:30001,localhost:30002 --ts=${snapshot_time}
     #+end_src
 
 ** Switch
@@ -199,7 +199,7 @@
    application for a moment, make sure we're synced up to the vanilla
    set, and restart it pointed to TokuMX.
    #+begin_src sh
-     ./inserts.py 'mongodb://localhost:30000,localhost:30001,localhost:30002/?replicaSet=tokumx test.inserts slow
+     ./inserts.py 'mongodb://localhost:30000,localhost:30001,localhost:30002/?replicaSet=tokumx' test.inserts slow
    #+end_src
 
    Now we can shut down the vanilla replica set, and we're all done!
