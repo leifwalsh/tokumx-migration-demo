@@ -181,7 +181,7 @@
 
     We can monitor this set with =mongostat=:
     #+begin_src sh
-      bin/mongostat -h localhost:20000,localhost:20001,localhost:20002
+      bin/mongostat -h localhost:30000,localhost:30001,localhost:30002
     #+end_src
 
 *** Stopping and starting =mongo2toku=
