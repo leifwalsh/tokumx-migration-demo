@@ -74,7 +74,6 @@
   I'll take you through them one by one.
 
 ** Dump
-
    We need to get a consistent snapshot of the state of the world at some
    point.  We'll use a secondary for this, but we also need to know the
    OpTime when we are taking the snapshot.
