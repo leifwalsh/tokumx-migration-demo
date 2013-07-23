@@ -26,8 +26,10 @@ yourself, in a terminal or using [Babel][3].
 Thanks
 ------
 
-Big thanks to @mongodb for building MongoDB, the
-[org-mode contributors][4] for creating the best emacs mode, and @sickill
-for building ascii.io.
+Big thanks to [@mongodb][4] for building MongoDB, the
+[org-mode contributors][5] for creating the best emacs mode, and
+[@sickill][6] for building ascii.io.
 
-[4]: http://orgmode.org/org.html#History-and-Acknowledgments
+[4]: http://github.com/mongodb
+[5]: http://orgmode.org/org.html#History-and-Acknowledgments
+[6]: http://github.com/sickill
